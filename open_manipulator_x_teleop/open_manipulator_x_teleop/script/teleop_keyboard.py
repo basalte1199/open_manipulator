@@ -40,6 +40,7 @@ import os
 import select
 import sys
 import rclpy
+import time
 
 from open_manipulator_msgs.msg import KinematicsPose, OpenManipulatorState
 from open_manipulator_msgs.srv import SetJointPosition, SetKinematicsPose
@@ -56,9 +57,9 @@ else:
     import termios
     import tty
 
-present_joint_angle = [0.0, 0.0, 0.0, 0.0]
-goal_joint_angle = [0.0, 0.0, 0.0, 0.0]
-prev_goal_joint_angle = [0.0, 0.0, 0.0, 0.0]
+present_joint_angle = [0.0, 0.0, 0.0, 0.0 ,0.0]
+goal_joint_angle = [0.0, 0.0, 0.0, 0.0 ,0.0]
+prev_goal_joint_angle = [0.0, 0.0, 0.0, 0.0 ,0.0]
 present_kinematics_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 goal_kinematics_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 prev_goal_kinematics_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -66,7 +67,8 @@ prev_goal_kinematics_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 debug = True
 task_position_delta = 0.01  # meter
 joint_angle_delta = 0.05  # radian
-path_time = 0.5  # second
+path_time = 2.0 # second
+send_time = 3.0
 
 usage = """
 Control Your OpenManipulator!
@@ -87,6 +89,10 @@ Joint Space Control:
 
 INIT : (1)
 HOME : (2)
+pick : (3)
+side pick : (4)
+home2 : (5)
+low pick : (6)
 
 CTRL-C to quit
 """
@@ -134,8 +140,10 @@ class TeleopKeyboard(Node):
         # Create Service Clients
         self.goal_joint_space = self.create_client(SetJointPosition, 'goal_joint_space_path')
         self.goal_task_space = self.create_client(SetKinematicsPose, 'goal_task_space_path')
+        self.tool_control = self.create_client(SetJointPosition, 'goal_tool_control')
         self.goal_joint_space_req = SetJointPosition.Request()
         self.goal_task_space_req = SetKinematicsPose.Request()
+        self.tool_control_req = SetJointPosition.Request()
 
     def send_goal_task_space(self):
         self.goal_task_space_req.end_effector_name = 'gripper'
@@ -154,14 +162,27 @@ class TeleopKeyboard(Node):
             self.get_logger().info('Sending Goal Kinematic Pose failed %r' % (e,))
 
     def send_goal_joint_space(self):
-        self.goal_joint_space_req.joint_position.joint_name = ['joint1', 'joint2', 'joint3', 'joint4']
-        self.goal_joint_space_req.joint_position.position = [goal_joint_angle[0], goal_joint_angle[1], goal_joint_angle[2], goal_joint_angle[3]]
-        self.goal_joint_space_req.path_time = path_time
+        self.goal_joint_space_req.joint_position.joint_name = ['joint1', 'joint2', 'joint3', 'joint4' ,'gripper']
+        self.goal_joint_space_req.joint_position.position = [goal_joint_angle[0], goal_joint_angle[1], goal_joint_angle[2], goal_joint_angle[3], goal_joint_angle[4]]
+        self.goal_joint_space_req.path_time = send_time
 
         try:
             send_goal_joint = self.goal_joint_space.call_async(self.goal_joint_space_req)
         except Exception as e:
             self.get_logger().info('Sending Goal Joint failed %r' % (e,))
+
+
+    def send_tool_control_request(self):
+        self.tool_control_req.joint_position.joint_name = ['joint1', 'joint2', 'joint3', 'joint4', 'gripper']
+        self.tool_control_req.joint_position.position = [goal_joint_angle[0], goal_joint_angle[1], goal_joint_angle[2], goal_joint_angle[3], goal_joint_angle[4]]
+        self.tool_control_req.path_time = path_time
+
+        try:
+            self.tool_control_result = self.tool_control.call_async(self.tool_control_req)
+
+        except Exception as e:
+            self.get_logger().info('Tool control failed %r' % (e,))
+
 
     def kinematics_pose_callback(self, msg):
         present_kinematics_pose[0] = msg.pose.position.x
@@ -177,12 +198,13 @@ class TeleopKeyboard(Node):
         present_joint_angle[1] = msg.position[1]
         present_joint_angle[2] = msg.position[2]
         present_joint_angle[3] = msg.position[3]
+        present_joint_angle[4] = msg.position[4]
 
     def open_manipulator_state_callback(self, msg):
         if msg.open_manipulator_moving_state == 'STOPPED':
             for index in range(0, 7):
                 goal_kinematics_pose[index] = present_kinematics_pose[index]
-            for index in range(0, 4):
+            for index in range(0, 5):
                 goal_joint_angle[index] = present_joint_angle[index]
 
 def get_key(settings):
@@ -201,11 +223,12 @@ def get_key(settings):
 
 def print_present_values():
     print(usage)
-    print('Joint Angle(Rad): [{:.6f}, {:.6f}, {:.6f}, {:.6f}]'.format(
+    print('Joint Angle(Rad): [{:.6f}, {:.6f}, {:.6f}, {:.6f} ,{:.6f}]'.format(
         present_joint_angle[0],
         present_joint_angle[1],
         present_joint_angle[2],
-        present_joint_angle[3]))
+        present_joint_angle[3],
+        present_joint_angle[4]))
     print('Kinematics Pose(Pose X, Y, Z | Orientation W, X, Y, Z): {:.3f}, {:.3f}, {:.3f} | {:.3f}, {:.3f}, {:.3f}, {:.3f}'.format(
         present_kinematics_pose[0],
         present_kinematics_pose[1],
@@ -241,24 +264,30 @@ def main():
             elif key_value == 'x':
                 goal_kinematics_pose[0] = prev_goal_kinematics_pose[0] - task_position_delta
                 teleop_keyboard.send_goal_task_space()
+
+
             elif key_value == 'a':
                 goal_kinematics_pose[1] = prev_goal_kinematics_pose[1] + task_position_delta
                 teleop_keyboard.send_goal_task_space()
             elif key_value == 'd':
                 goal_kinematics_pose[1] = prev_goal_kinematics_pose[1] - task_position_delta
                 teleop_keyboard.send_goal_task_space()
+
+                
             elif key_value == 'q':
                 goal_kinematics_pose[2] = prev_goal_kinematics_pose[2] + task_position_delta
                 teleop_keyboard.send_goal_task_space()
             elif key_value == 'z':
                 goal_kinematics_pose[2] = prev_goal_kinematics_pose[2] - task_position_delta
                 teleop_keyboard.send_goal_task_space()
+
             elif key_value == 'y':
                 goal_joint_angle[0] = prev_goal_joint_angle[0] + joint_angle_delta
                 teleop_keyboard.send_goal_joint_space()
             elif key_value == 'h':
                 goal_joint_angle[0] = prev_goal_joint_angle[0] - joint_angle_delta
                 teleop_keyboard.send_goal_joint_space()
+                
             elif key_value == 'u':
                 goal_joint_angle[1] = prev_goal_joint_angle[1] + joint_angle_delta
                 teleop_keyboard.send_goal_joint_space()
@@ -277,18 +306,96 @@ def main():
             elif key_value == 'l':
                 goal_joint_angle[3] = prev_goal_joint_angle[3] - joint_angle_delta
                 teleop_keyboard.send_goal_joint_space()
+
+            elif key_value == 'f':
+                goal_joint_angle[4] = prev_goal_joint_angle[4] - 0.01
+                teleop_keyboard.send_tool_control_request()
+                print(goal_joint_angle[4])
+            elif key_value == 'g':
+                goal_joint_angle[4] = prev_goal_joint_angle[4] + 0.01
+                teleop_keyboard.send_tool_control_request()
+                print(goal_joint_angle[4])
+
             elif key_value == '1':
                 goal_joint_angle[0] = 0.0
                 goal_joint_angle[1] = 0.0
                 goal_joint_angle[2] = 0.0
                 goal_joint_angle[3] = 0.0
+                goal_joint_angle[4] = prev_goal_joint_angle[4] - 0.01
                 teleop_keyboard.send_goal_joint_space()
+                teleop_keyboard.send_tool_control_request()
             elif key_value == '2':
                 goal_joint_angle[0] = 0.0
                 goal_joint_angle[1] = -1.05
                 goal_joint_angle[2] = 0.35
                 goal_joint_angle[3] = 0.70
+                goal_joint_angle[4] = prev_goal_joint_angle[4] + 0.01
                 teleop_keyboard.send_goal_joint_space()
+                teleop_keyboard.send_tool_control_request()
+            
+            elif key_value == '3':
+                goal_joint_angle[0] = 0.0
+                goal_joint_angle[1] = 0.8
+                goal_joint_angle[2] = 0.0
+                goal_joint_angle[3] = -0.3
+                goal_joint_angle[4] = prev_goal_joint_angle[4] + 0.01
+                teleop_keyboard.send_goal_joint_space()
+                teleop_keyboard.send_tool_control_request()
+                time.sleep(2)
+                goal_joint_angle[4] = prev_goal_joint_angle[4] - 0.01
+                teleop_keyboard.send_tool_control_request()
+                time.sleep(1)
+                goal_joint_angle[0] = 0.0
+                goal_joint_angle[1] = -1.05
+                goal_joint_angle[2] = 0.35
+                goal_joint_angle[3] = 0.70
+                teleop_keyboard.send_goal_joint_space()
+
+            elif key_value == '4':
+                goal_joint_angle[0] = 0.5
+                goal_joint_angle[1] = 0.8
+                goal_joint_angle[2] = 0.0
+                goal_joint_angle[3] = -0.2
+                goal_joint_angle[4] = prev_goal_joint_angle[4] + 0.007
+                teleop_keyboard.send_goal_joint_space()
+                teleop_keyboard.send_tool_control_request()
+                time.sleep(5)
+                goal_joint_angle[4] = prev_goal_joint_angle[4] - 0.006
+                teleop_keyboard.send_tool_control_request()
+                time.sleep(1)
+                goal_joint_angle[0] = 0.0
+                goal_joint_angle[1] = -1.05
+                goal_joint_angle[2] = 0.35
+                goal_joint_angle[3] = 0.70
+                teleop_keyboard.send_goal_joint_space()
+
+            elif key_value == '5':
+                goal_joint_angle[0] = 0.0
+                goal_joint_angle[1] = -1.5
+                goal_joint_angle[2] = 1.5
+                goal_joint_angle[3] = 0.80
+                goal_joint_angle[4] = prev_goal_joint_angle[4] + 0.01
+                teleop_keyboard.send_goal_joint_space()
+                teleop_keyboard.send_tool_control_request()
+            
+            elif key_value == '6':
+                goal_joint_angle[0] = 0.0
+                goal_joint_angle[1] = 1.9
+                goal_joint_angle[2] = 0.0
+                goal_joint_angle[3] = 0.4
+                goal_joint_angle[4] = prev_goal_joint_angle[4] + 0.01
+                teleop_keyboard.send_goal_joint_space()
+                teleop_keyboard.send_tool_control_request()
+                time.sleep(2)
+                goal_joint_angle[4] = prev_goal_joint_angle[4] - 0.01
+                teleop_keyboard.send_tool_control_request()
+                time.sleep(1)
+                goal_joint_angle[0] = 0.0
+                goal_joint_angle[1] = -1.05
+                goal_joint_angle[2] = 0.35
+                goal_joint_angle[3] = 0.70
+                teleop_keyboard.send_goal_joint_space()
+            
             else:
                 if key_value == '\x03':
                     break
@@ -297,6 +404,7 @@ def main():
                         prev_goal_kinematics_pose[index] = goal_kinematics_pose[index]
                     for index in range(0, 4):
                         prev_goal_joint_angle[index] = goal_joint_angle[index]
+
 
     except Exception as e:
         print(e)

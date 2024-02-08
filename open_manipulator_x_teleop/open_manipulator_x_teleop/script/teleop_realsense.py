@@ -46,9 +46,9 @@ goal_kinematics_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 prev_goal_kinematics_pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 debug = True
-task_position_delta = 0.01  # meter
-joint_angle_delta = 0.05  # radian
-path_time = 2.0 # second
+task_position_delta = 0.002  # meter
+joint_angle_delta = 0.06  # radian
+path_time = 1.0 # second
 send_time = 3.0
 
 usage = """
@@ -103,7 +103,7 @@ class TeleopRsSub(Node):
         self.realsense_subscription = self.create_subscription(RGBD, '/camera/camera/rgbd', self.listener_callback, self.qos)
         self.model = YOLO('yolov8n.pt')
         self.depth_image = None
-
+        self.realsense_subscription
 
 
         # Create joint_states subscriber
@@ -142,7 +142,7 @@ class TeleopRsSub(Node):
 
         #realsense用のdef
     def listener_callback(self, msg):
-        cv2.imshow("Image window", self.mask_rgb(self.bridge.imgmsg_to_cv2(msg.rgb, "bgr8"), self.bridge.imgmsg_to_cv2(msg.depth, "passthrough")))
+        #cv2.imshow("Image window", self.mask_rgb(self.bridge.imgmsg_to_cv2(msg.rgb, "bgr8"), self.bridge.imgmsg_to_cv2(msg.depth, "passthrough")))
 
         self.rgb_image = self.bridge.imgmsg_to_cv2(msg.rgb, 'bgr8')
         self.depth_image = self.bridge.imgmsg_to_cv2(msg.depth, "passthrough")
@@ -163,14 +163,17 @@ class TeleopRsSub(Node):
 
     def control_teleop(self):
         tmp_image = copy.copy(self.rgb_image)
-        results: List[Results] = self.model.predict(self.rgb_image, verbose=False)
+        results: List[Results] = self.model.predict(self.rgb_image, verbose=False, classes=[0], conf=0.3)
 
 
         for result in results:
             boxes = result.boxes.cpu().numpy()
             names = result.names
+            print(names)
             if len(boxes.xyxy) == 0:
                 continue
+            #elif names != 'bottle':
+            #    continue
             x1, y1, x2, y2 = map(int, boxes.xyxy[0][:4])
             cls_pred = boxes.cls[0]
             tmp_image = cv2.rectangle(tmp_image, (x1, y1), (x2, y2), (0, 255, 0), 3)
@@ -178,7 +181,7 @@ class TeleopRsSub(Node):
             cx, cy = (x1+x2)//2, (y1+y2)//2
             #print(names[cls_pred], self.depth_image[cy][cx]/10, "mm")
             obj.append([names[cls_pred],cx,cy,self.depth_image[cy][cx]/10])
-            print(result)
+
         print(obj)
         #tmp_image = cv2.cvtColor(tmp_image, cv2.COLOR_RGB2BGR)
         #detection_result = self.bridge.cv2_to_imgmsg(tmp_image, "bgr8")
@@ -261,7 +264,7 @@ def get_key(settings):
     #print_present_values()
     return key
 
-"""
+
 def print_present_values():
     print('Joint Angle(Rad): [{:.6f}, {:.6f}, {:.6f}, {:.6f} ,{:.6f}]'.format(
         present_joint_angle[0],
@@ -277,7 +280,7 @@ def print_present_values():
         present_kinematics_pose[4],
         present_kinematics_pose[5],
         present_kinematics_pose[6]))
-"""
+
 def main():
     settings = None 
     if os.name != 'nt':
@@ -298,35 +301,61 @@ def main():
             rclpy.spin_once(teleop_RsSub)
             key_value = get_key(settings)
             
-
-        
-                    #メモ　絶対値はつけず、正負で動かす方向を指定する
-            dist1,dist2 = (1280//2) - int(obj[0][1]), 720//2 - int(obj[0][2])
-
-            
-            if dist1 > 640:
-                goal_kinematics_pose[1] = prev_goal_kinematics_pose[1] + task_position_delta
+            if key_value == 'q':
+                goal_kinematics_pose[2] = prev_goal_kinematics_pose[2] + task_position_delta
+                teleop_RsSub.send_goal_task_space()
+            elif key_value == 'z':
+                goal_kinematics_pose[2] = prev_goal_kinematics_pose[2] - task_position_delta
                 teleop_RsSub.send_goal_task_space()
             
-            if dist1 < 640:
-                goal_kinematics_pose[1] = prev_goal_kinematics_pose[1] - task_position_delta
-                teleop_RsSub.send_goal_task_space()           
-            
-            goal_kinematics_pose[1] = prev_goal_kinematics_pose[1] - task_position_delta
-            teleop_RsSub.send_goal_task_space() 
 
-            if dist1 == 0:
-                print(0)
-            
+
+            #メモ　絶対値はつけず、正負で動かす方向を指定する
+            if int(len(obj)) > 1:
+                dist1,dist2 = (1280//2) - int(obj[0][1]), 720//2 - int(obj[0][2])
             else:
-                if key_value == '\x03':
-                    break
-                else:
-                    for index in range(0, 7):
-                        prev_goal_kinematics_pose[index] = goal_kinematics_pose[index]
-                    for index in range(0, 4):
-                        prev_goal_joint_angle[index] = goal_joint_angle[index]
+                continue
 
+
+            print(dist1,float(dist1/1200))
+            
+            goal_joint_angle[0] = float(dist1 /1300)
+            teleop_RsSub.send_goal_joint_space()
+
+            """
+            if  int(dist1) < 640:
+                print("aaaaaaaa")
+                goal_joint_angle[0] = prev_goal_joint_angle[0] + joint_angle_delta
+                teleop_RsSub.send_goal_joint_space()
+            elif int(dist1) > 640:
+                print("bbbbbbbbbbbbbbb")
+                goal_joint_angle[0] = prev_goal_joint_angle[0] - joint_angle_delta
+                teleop_RsSub.send_goal_joint_space()
+            """    
+            
+
+            """
+            if dist1 > 640:
+                goal_joint_angle[0] = prev_goal_joint_angle[0] + joint_angle_delta
+                teleop_RsSub.send_goal_joint_space()
+            
+            if dist1 < 640:
+                goal_joint_angle[0] = prev_goal_joint_angle[0] - joint_angle_delta
+                teleop_RsSub.send_goal_joint_space()    
+            """ 
+            #goal_kinematics_pose[1] = prev_goal_kinematics_pose[1] - task_position_delta
+            #teleop_RsSub.send_goal_task_space() 
+            obj.clear()
+
+            
+            if key_value == '\x03':
+                break
+            else:
+                for index in range(0, 7):
+                    prev_goal_kinematics_pose[index] = goal_kinematics_pose[index]
+                for index in range(0, 4):
+                    prev_goal_joint_angle[index] = goal_joint_angle[index]
+            
             
 
     except Exception as e:
